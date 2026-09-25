@@ -1,0 +1,69 @@
+services:
+  app:
+    build:
+      context: .
+    image: ${APP_IMAGE:-devops-eval-app:local}
+    container_name: devops-eval-app
+    ports:
+      - "8000:5000"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      APP_VERSION: ${APP_VERSION:-0.0.0}
+      COMMIT_SHA: ${COMMIT_SHA:-local}
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/health').status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - appnet
+
+  redis:
+    image: redis:7-alpine
+    container_name: devops-eval-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - appnet
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: devops-eval-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - app
+    restart: unless-stopped
+    networks:
+      - appnet
+
+volumes:
+  redis-data:
+  prometheus-data:
+
+networks:
+  appnet:
+    driver: bridge

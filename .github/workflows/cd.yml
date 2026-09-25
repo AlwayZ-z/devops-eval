@@ -1,0 +1,134 @@
+name: CD
+
+# Le CD ne part jamais tout seul sur une PR : il attend qu'un run de CI soit
+# termine en succes sur main, ou un declenchement manuel.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environnement cible du deploiement
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+
+# Moindre privilege : lecture du code, ecriture sur le registry GitHub.
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    name: Build and push
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      sha_short: ${{ steps.meta.outputs.sha_short }}
+      sha_full: ${{ steps.meta.outputs.sha_full }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Calculer les tags
+        id: meta
+        run: |
+          SHA_FULL="${{ github.event.workflow_run.head_sha || github.sha }}"
+          IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          {
+            echo "sha_full=${SHA_FULL}"
+            echo "sha_short=${SHA_FULL:0:7}"
+            echo "image=${IMAGE}"
+            echo "version=${VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Preparer Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Se connecter au registry GitHub
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Construire et pousser l'image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:latest
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_short }}
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.meta.outputs.sha_full }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Recapitulatif des tags pousses
+        run: |
+          echo "### Image publiee" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ steps.meta.outputs.image }}:latest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_short }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy sur la machine cible
+    needs: build-and-push
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/main'
+    runs-on: self-hosted
+    environment: production
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Se connecter au registry GitHub
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deployer, verifier, et revenir en arriere si besoin
+        env:
+          IMAGE: ${{ needs.build-and-push.outputs.image }}
+          SHA_SHORT: ${{ needs.build-and-push.outputs.sha_short }}
+          COMMIT_SHA: ${{ needs.build-and-push.outputs.sha_full }}
+          APP_VERSION: ${{ needs.build-and-push.outputs.version }}
+          HEALTH_URL: http://localhost:8000/health
+          STATUS_URL: http://localhost:8000/status
+        run: |
+          chmod +x deploy/deploy.sh
+          ./deploy/deploy.sh
+
+      - name: Etat de la stack
+        if: always()
+        run: docker compose ps

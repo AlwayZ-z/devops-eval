@@ -1,0 +1,175 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+# Moindre privilege : la CI ne fait que lire le depot.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+
+      - name: Preparer l'environnement
+        uses: ./.github/actions/setup-app
+        with:
+          python-version: "3.12"
+
+      - name: flake8
+        run: flake8 .
+
+  lint-yaml:
+    name: Lint YAML
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+
+      - name: Preparer l'environnement
+        uses: ./.github/actions/setup-app
+        with:
+          python-version: "3.12"
+
+      - name: yamllint
+        run: yamllint --strict .
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+
+      - name: Preparer l'environnement
+        uses: ./.github/actions/setup-app
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Verifier que le service Redis repond
+        run: |
+          python - <<'PY'
+          import os
+          import redis
+
+          client = redis.Redis(
+              host=os.environ["REDIS_HOST"],
+              port=int(os.environ["REDIS_PORT"]),
+          )
+          client.ping()
+          print("service redis joignable")
+          PY
+
+      - name: Lancer les tests
+        run: |
+          mkdir -p reports
+          pytest -v \
+            --junitxml=reports/junit-${{ matrix.python-version }}.xml \
+            --cov=. \
+            --cov-report=xml:reports/coverage-${{ matrix.python-version }}.xml \
+            --cov-report=term
+
+      - name: Publier les rapports de tests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-python-${{ matrix.python-version }}
+          path: reports/
+          retention-days: 7
+
+  build:
+    name: Build image
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+
+      - name: Preparer Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Construire l'image (sans push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: devops-eval-app:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verifier que le conteneur demarre et sert /metrics
+        run: |
+          docker run -d --name ci-smoke -p 8000:5000 devops-eval-app:ci
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS http://localhost:8000/metrics >/dev/null; then
+              echo "l'image repond sur /metrics"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::l'image ne repond pas sur /metrics"
+          docker logs ci-smoke
+          exit 1
+
+  ci-ok:
+    name: CI OK
+    needs: [lint, lint-yaml, test, build]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Recuperer les rapports de tests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: reports-python-*
+          path: downloaded-reports
+          merge-multiple: false
+
+      - name: Lister les rapports recuperes
+        run: ls -R downloaded-reports || echo "aucun rapport disponible"
+
+      - name: Verifier le resultat des jobs precedents
+        run: |
+          echo "lint       = ${{ needs.lint.result }}"
+          echo "lint-yaml  = ${{ needs.lint-yaml.result }}"
+          echo "test       = ${{ needs.test.result }}"
+          echo "build      = ${{ needs.build.result }}"
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "::error::au moins un job de la CI a echoue"
+            exit 1
+          fi
+          echo "tous les jobs de la CI sont verts"

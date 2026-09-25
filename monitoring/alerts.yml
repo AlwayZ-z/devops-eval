@@ -1,0 +1,46 @@
+groups:
+  - name: devops-eval-slo
+    rules:
+      # ------------------------------------------------------------------
+      # Taux d'erreurs 5xx eleve.
+      # Seuil 5 % : en dessous, un pic isole reste dans le bruit normal
+      # d'une petite API. for: 5m : deux fenetres de scrape completes, ce
+      # qui evite de reveiller quelqu'un pour un redemarrage de conteneur.
+      # ------------------------------------------------------------------
+      - alert: HighErrorRate
+        expr: >
+          sum(rate(http_requests_total{code=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(http_requests_total[5m])), 0.001)
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Taux d'erreurs 5xx superieur a 5 %"
+          description: >
+            {{ $value | humanizePercentage }} des requetes repondent en 5xx
+            sur les 5 dernieres minutes (seuil : 5 %).
+
+      # ------------------------------------------------------------------
+      # Latence degradee, mesuree sur le p95 de l'histogramme.
+      # Seuil 500 ms : l'API repond normalement en quelques millisecondes,
+      # un p95 a 500 ms signale une degradation franche et non un jitter.
+      # for: 10m : plus long que l'alerte d'erreurs, car une latence elevee
+      # est moins urgente qu'une indisponibilite et plus sujette aux faux
+      # positifs (GC, montee en charge ponctuelle).
+      # ------------------------------------------------------------------
+      - alert: HighLatencyP95
+        expr: >
+          histogram_quantile(
+            0.95,
+            sum by (le, endpoint) (rate(http_request_duration_seconds_bucket[5m]))
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latence p95 superieure a 500 ms sur {{ $labels.endpoint }}"
+          description: >
+            Le 95e percentile de la duree des requetes sur {{ $labels.endpoint }}
+            depasse 500 ms depuis 10 minutes.
