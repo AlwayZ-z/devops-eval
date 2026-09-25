@@ -92,7 +92,7 @@ jobs:
           echo "- \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_short }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
 
-  deploy:
+   deploy:
     name: Deploy sur la machine cible
     needs: build-and-push
     if: >-
@@ -101,9 +101,6 @@ jobs:
     runs-on: self-hosted
     environment: production
     timeout-minutes: 20
-    defaults:
-      run:
-        shell: bash
     steps:
       - name: Recuperer le code
         uses: actions/checkout@v4
@@ -118,6 +115,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Deployer, verifier, et revenir en arriere si besoin
+        shell: pwsh
         env:
           IMAGE: ${{ needs.build-and-push.outputs.image }}
           SHA_SHORT: ${{ needs.build-and-push.outputs.sha_short }}
@@ -126,9 +124,13 @@ jobs:
           HEALTH_URL: http://localhost:8000/health
           STATUS_URL: http://localhost:8000/status
         run: |
-          chmod +x deploy/deploy.sh
-          ./deploy/deploy.sh
+          $bash = "C:\Program Files\Git\bin\bash.exe"
+          if (-not (Test-Path $bash)) { $bash = "C:\Program Files (x86)\Git\bin\bash.exe" }
+          if (-not (Test-Path $bash)) { throw "Git Bash introuvable sur la machine cible" }
+          & $bash -c "./deploy/deploy.sh"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Etat de la stack
         if: always()
+        shell: pwsh
         run: docker compose ps
