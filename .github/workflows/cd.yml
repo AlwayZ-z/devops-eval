@@ -118,7 +118,7 @@ jobs:
       # comprend pas les chemins Windows. On appelle donc Git Bash par son
       # chemin complet, et on propage explicitement le code de sortie.
       - name: Deployer, verifier, et revenir en arriere si besoin
-        shell: pwsh
+        shell: powershell
         env:
           IMAGE: ${{ needs.build-and-push.outputs.image }}
           SHA_SHORT: ${{ needs.build-and-push.outputs.sha_short }}
@@ -141,5 +141,5 @@ jobs:
 
       - name: Etat de la stack
         if: always()
-        shell: pwsh
+        shell: powershell
         run: docker compose ps
