@@ -92,7 +92,7 @@ jobs:
           echo "- \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_short }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
 
-   deploy:
+  deploy:
     name: Deploy sur la machine cible
     needs: build-and-push
     if: >-
@@ -114,6 +114,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Le runner Windows trouve le bash de WSL avant celui de Git, et WSL ne
+      # comprend pas les chemins Windows. On appelle donc Git Bash par son
+      # chemin complet, et on propage explicitement le code de sortie.
       - name: Deployer, verifier, et revenir en arriere si besoin
         shell: pwsh
         env:
@@ -125,10 +128,16 @@ jobs:
           STATUS_URL: http://localhost:8000/status
         run: |
           $bash = "C:\Program Files\Git\bin\bash.exe"
-          if (-not (Test-Path $bash)) { $bash = "C:\Program Files (x86)\Git\bin\bash.exe" }
-          if (-not (Test-Path $bash)) { throw "Git Bash introuvable sur la machine cible" }
+          if (-not (Test-Path $bash)) {
+            $bash = "C:\Program Files (x86)\Git\bin\bash.exe"
+          }
+          if (-not (Test-Path $bash)) {
+            throw "Git Bash introuvable sur la machine cible"
+          }
           & $bash -c "./deploy/deploy.sh"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Etat de la stack
         if: always()
