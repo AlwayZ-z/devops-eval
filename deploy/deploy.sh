@@ -83,6 +83,13 @@ rollback() {
         return
     fi
     log "ROLLBACK vers la version precedente ${PREVIOUS_SHA}"
+    # Un rollback qui ne remet que l'image laisserait en place une
+    # configuration cassee : on restaure aussi le compose de cette version.
+    if git checkout "$PREVIOUS_SHA" -- docker-compose.yml 2>/dev/null; then
+        log "configuration docker-compose.yml restauree depuis ${PREVIOUS_SHA}"
+    else
+        log "impossible de restaurer docker-compose.yml depuis ${PREVIOUS_SHA}"
+    fi
     if start_stack "$PREVIOUS_SHA" && check_health; then
         log "rollback reussi, la version ${PREVIOUS_SHA} est de nouveau en service"
     else
